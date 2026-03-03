@@ -83,6 +83,10 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
   for model in ${train_models}; do
     log_path="${log_dir}/${model}_$(date +%Y-%m-%d_%H%M%S).log"
     echo "Logging to ${log_path}"
+    checkpoint_path="${pretrained_model_dir}/${model}.pt"
+    if [ -n "${checkpoint_override:-}" ]; then
+      checkpoint_path="${checkpoint_override}"
+    fi
     torchrun --nnodes=1 --nproc_per_node=$num_gpus \
         --rdzv_id=$job_id --rdzv_backend="c10d" --rdzv_endpoint="localhost:0" \
       ../../../cosyvoice/bin/train.py \
@@ -91,7 +95,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
       --train_data "${data_dir}/train.data.list" \
       --cv_data "${data_dir}/dev.data.list" \
       --model $model \
-      --checkpoint "${pretrained_model_dir}/${model}.pt" \
+      --checkpoint "${checkpoint_path}" \
       --model_dir "${exp_root}/${model}/${train_engine}" \
       --tensorboard_dir "${tensorboard_root}/${model}/${train_engine}" \
       --ddp.dist_backend $dist_backend \
