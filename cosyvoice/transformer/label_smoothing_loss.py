@@ -17,6 +17,7 @@
 import math
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 class LabelSmoothingLoss(nn.Module):
@@ -91,7 +92,25 @@ class LabelSmoothingLoss(nn.Module):
         target = target.view(-1)
         ignore = target == self.padding_idx  # (N,)
         total = len(target) - ignore.sum().item()
-        target = target.masked_fill(ignore, 0)  # avoid -1 index
+
+        # Fast path for plain cross entropy (most common for CosyVoice recipes).
+        # This reduces peak memory on small VRAM GPUs and avoids extra tensor
+        # allocations in the smoothing implementation.
+        if self.smoothing == 0.0:
+            loss_sum = F.cross_entropy(
+                x,
+                target,
+                ignore_index=self.padding_idx,
+                reduction="sum",
+            )
+            denom = total if self.normalize_length else batch_size
+            # Avoid division by zero in pathological cases (all padding).
+            if denom == 0:
+                return loss_sum * 0.0
+            return loss_sum / denom
+
+        # For smoothing > 0, avoid -1 index for gather.
+        target = target.masked_fill(ignore, 0)
 
         # Memory-efficient implementation: avoid allocating a dense (N, V)
         # target distribution (true_dist). This matters a lot for large vocab.

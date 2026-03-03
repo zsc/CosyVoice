@@ -364,9 +364,16 @@ def dynamic_batch(data, max_frames_in_batch=12000, mode='train'):
         longest_frames = max(longest_frames, new_sample_frames)
         frames_after_padding = longest_frames * (len(buf) + 1)
         if frames_after_padding > max_frames_in_batch:
-            yield buf
-            buf = [sample]
-            longest_frames = new_sample_frames
+            # Avoid yielding an empty batch when a single sample exceeds
+            # max_frames_in_batch. In that case, yield the long sample as-is.
+            if len(buf) == 0:
+                yield [sample]
+                buf = []
+                longest_frames = 0
+            else:
+                yield buf
+                buf = [sample]
+                longest_frames = new_sample_frames
         else:
             buf.append(sample)
     if len(buf) > 0:

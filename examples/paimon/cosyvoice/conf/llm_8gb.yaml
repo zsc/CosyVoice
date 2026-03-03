@@ -86,10 +86,10 @@ tokenize: !name:cosyvoice.dataset.processor.tokenize
 filter: !name:cosyvoice.dataset.processor.filter
     max_length: 40960
     min_length: 0
-    token_max_length: 200
+    token_max_length: 160
     token_min_length: 1
     # Hard cap to avoid rare long utterances blowing up attention memory.
-    speech_token_max_length: 320
+    speech_token_max_length: 240
 resample: !name:cosyvoice.dataset.processor.resample
     resample_rate: !ref <sample_rate>
 feat_extractor: !name:matcha.utils.audio.mel_spectrogram
@@ -112,7 +112,7 @@ sort: !name:cosyvoice.dataset.processor.sort
 batch: !name:cosyvoice.dataset.processor.batch
     batch_type: 'dynamic'
     # Smaller than the flow recipe to reduce peak memory during llm.
-    max_frames_in_batch: 120
+    max_frames_in_batch: 96
 padding: !name:cosyvoice.dataset.processor.padding
     use_spk_embedding: True
 
@@ -142,4 +142,5 @@ train_conf:
     # Increase accumulation to keep global batch roughly similar but reduce per-step memory.
     accum_grad: 8
     log_interval: 100
-    save_per_step: -1
+    # Save occasionally so OOM doesn't waste the whole epoch.
+    save_per_step: 200
