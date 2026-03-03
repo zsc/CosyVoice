@@ -60,12 +60,18 @@ if __name__ == "__main__":
     utt2wav, utt2spk = {}, {}
     with open('{}/wav.scp'.format(args.dir)) as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2wav[l[0]] = l[1]
+            l = l.strip()
+            if not l:
+                continue
+            utt, wav = l.split(maxsplit=1)
+            utt2wav[utt] = wav
     with open('{}/utt2spk'.format(args.dir)) as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2spk[l[0]] = l[1]
+            l = l.strip()
+            if not l:
+                continue
+            utt, spk = l.split(maxsplit=1)
+            utt2spk[utt] = spk
 
     option = onnxruntime.SessionOptions()
     option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL

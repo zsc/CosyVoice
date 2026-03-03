@@ -22,7 +22,10 @@ import torch
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
-import pyworld as pw
+try:
+    import pyworld as pw
+except ModuleNotFoundError:
+    pw = None
 from cosyvoice.utils.onnx import embedding_extractor, online_feature
 
 AUDIO_FORMAT_SETS = {'flac', 'mp3', 'm4a', 'ogg', 'opus', 'wav', 'wma'}
@@ -42,10 +45,9 @@ def parquet_opener(data, mode='train'):
         assert 'src' in sample
         url = sample['src']
         try:
-            for df in pq.ParquetFile(url).iter_batches(batch_size=64):
-                df = df.to_pandas()
-                for i in range(len(df)):
-                    sample.update(dict(df.loc[i]))
+            for batch in pq.ParquetFile(url).iter_batches(batch_size=64):
+                for row in batch.to_pylist():
+                    sample.update(row)
                     # NOTE do not return sample directly, must initialize a new dict
                     yield {**sample}
         except Exception as ex:
@@ -57,6 +59,7 @@ def filter(data,
            min_length=10,
            token_max_length=200,
            token_min_length=1,
+           speech_token_max_length=0,
            min_output_input_ratio=0.0005,
            max_output_input_ratio=1,
            mode='train'):
@@ -95,6 +98,8 @@ def filter(data,
         if len(sample['text_token']) > token_max_length:
             continue
         if online_feature is False and len(sample['speech_token']) == 0:
+            continue
+        if online_feature is False and speech_token_max_length and len(sample['speech_token']) > speech_token_max_length:
             continue
         if online_feature is False and 'reject_speech_token' in sample and len(sample['reject_speech_token']) == 0:
             continue
@@ -206,6 +211,8 @@ def compute_f0(data, sample_rate, hop_size, mode='train'):
         Returns:
             Iterable[{key, feat, label}]
     """
+    if pw is None:
+        raise ModuleNotFoundError('pyworld is required for compute_f0, please install pyworld')
     frame_period = hop_size * 1000 / sample_rate
     for sample in data:
         assert 'sample_rate' in sample

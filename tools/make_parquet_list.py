@@ -17,7 +17,8 @@ import logging
 import os
 import json
 from tqdm import tqdm
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import multiprocessing
 import time
 import torch
@@ -31,27 +32,29 @@ def job(utt_list, parquet_file, utt2parquet_file, spk2parquet_file):
         data_list.append(data)
 
     # 保存到parquet,utt2parquet_file,spk2parquet_file
-    df = pd.DataFrame()
-    df['utt'] = utt_list
-    df['audio_data'] = data_list
-    df['wav'] = [utt2wav[utt] for utt in utt_list]
-    df['text'] = [utt2text[utt] for utt in utt_list]
-    df['spk'] = [utt2spk[utt] for utt in utt_list]
+    spk_list = [utt2spk[utt] for utt in utt_list]
+    table_dict = {
+        'utt': utt_list,
+        'audio_data': data_list,
+        'wav': [utt2wav[utt] for utt in utt_list],
+        'text': [utt2text[utt] for utt in utt_list],
+        'spk': spk_list,
+    }
     if utt2embedding is not None:
-        df['utt_embedding'] = [utt2embedding[utt] for utt in utt_list]
+        table_dict['utt_embedding'] = [utt2embedding[utt] for utt in utt_list]
     if spk2embedding is not None:
-        df['spk_embedding'] = [spk2embedding[utt2spk[utt]] for utt in utt_list]
+        table_dict['spk_embedding'] = [spk2embedding[utt2spk[utt]] for utt in utt_list]
     if utt2speech_token is not None:
-        df['speech_token'] = [utt2speech_token[utt] for utt in utt_list]
+        table_dict['speech_token'] = [utt2speech_token[utt] for utt in utt_list]
     if utt2instruct is not None:
-        df['instruct'] = [utt2instruct[utt] for utt in utt_list]
+        table_dict['instruct'] = [utt2instruct[utt] for utt in utt_list]
     if args.dpo:
-        df['reject_speech_token'] = [utt2reject_speech_token.get(utt, None) for utt in utt_list]
-    df.to_parquet(parquet_file)
+        table_dict['reject_speech_token'] = [utt2reject_speech_token.get(utt, None) for utt in utt_list]
+    pq.write_table(pa.Table.from_pydict(table_dict), parquet_file)
     with open(utt2parquet_file, 'w') as f:
         json.dump({k: parquet_file for k in utt_list}, f, ensure_ascii=False, indent=2)
     with open(spk2parquet_file, 'w') as f:
-        json.dump({k: parquet_file for k in list(set(spk_list))}, f, ensure_ascii=False, indent=2)
+        json.dump({k: parquet_file for k in sorted(set(spk_list))}, f, ensure_ascii=False, indent=2)
     logging.info('spend time {}'.format(time.time() - start_time))
 
 
@@ -78,22 +81,34 @@ if __name__ == "__main__":
     utt2wav, utt2text, utt2spk = {}, {}, {}
     with open('{}/wav.scp'.format(args.src_dir)) as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2wav[l[0]] = l[1]
+            l = l.strip()
+            if not l:
+                continue
+            utt, wav = l.split(maxsplit=1)
+            utt2wav[utt] = wav
     with open('{}/text'.format(args.src_dir)) as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2text[l[0]] = ' '.join(l[1:])
+            l = l.strip()
+            if not l:
+                continue
+            utt, text = l.split(maxsplit=1)
+            utt2text[utt] = text
     with open('{}/utt2spk'.format(args.src_dir)) as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2spk[l[0]] = l[1]
+            l = l.strip()
+            if not l:
+                continue
+            utt, spk = l.split(maxsplit=1)
+            utt2spk[utt] = spk
     if os.path.exists('{}/instruct'.format(args.src_dir)):
         utt2instruct = {}
         with open('{}/instruct'.format(args.src_dir)) as f:
             for l in f:
-                l = l.replace('\n', '').split()
-                utt2instruct[l[0]] = ' '.join(l[1:])
+                l = l.strip()
+                if not l:
+                    continue
+                utt, instruct = l.split(maxsplit=1)
+                utt2instruct[utt] = instruct
     else:
         utt2instruct = None
     utt2embedding = torch.load('{}/utt2embedding.pt'.format(args.src_dir)) if os.path.exists('{}/utt2embedding.pt'.format(args.src_dir)) else None

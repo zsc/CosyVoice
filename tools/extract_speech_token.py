@@ -59,8 +59,11 @@ if __name__ == "__main__":
     utt2wav = {}
     with open('{}/wav.scp'.format(args.dir)) as f:
         for l in f:
-            l = l.replace('\n', '').split()
-            utt2wav[l[0]] = l[1]
+            l = l.strip()
+            if not l:
+                continue
+            utt, wav = l.split(maxsplit=1)
+            utt2wav[utt] = wav
 
     option = onnxruntime.SessionOptions()
     option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL

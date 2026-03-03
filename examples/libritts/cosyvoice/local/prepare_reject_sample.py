@@ -17,12 +17,18 @@ def main():
     utt2wav, utt2text = {}, {}
     with open('{}/wav.scp'.format(args.src_dir)) as f:
         for l in f:
-            l = l.split('\n')[0].split()
-            utt2wav[l[0]] = l[1]
+            l = l.strip()
+            if not l:
+                continue
+            utt, wav = l.split(maxsplit=1)
+            utt2wav[utt] = wav
     with open('{}/text'.format(args.src_dir)) as f:
         for l in f:
-            l = l.split('\n')[0].split()
-            utt2text[l[0]] = ' '.join(l[1:])
+            l = l.strip()
+            if not l:
+                continue
+            utt, text = l.split(maxsplit=1)
+            utt2text[utt] = text
 
     os.makedirs('{}/wav'.format(args.des_dir), exist_ok=True)
     with open('{}/wav.scp'.format(args.des_dir), 'w') as f:

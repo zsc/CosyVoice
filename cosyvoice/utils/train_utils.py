@@ -22,15 +22,21 @@ import re
 import datetime
 import yaml
 
-import deepspeed
+try:
+    import deepspeed  # type: ignore
+    from deepspeed.runtime.zero.stage_1_and_2 import estimate_zero2_model_states_mem_needs_all_live  # type: ignore
+except ModuleNotFoundError:
+    deepspeed = None
+    estimate_zero2_model_states_mem_needs_all_live = None
 import torch.optim as optim
 import torch.distributed as dist
 
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:
+    SummaryWriter = None
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-
-from deepspeed.runtime.zero.stage_1_and_2 import estimate_zero2_model_states_mem_needs_all_live
 
 from cosyvoice.dataset.dataset import Dataset
 from cosyvoice.utils.scheduler import WarmupLR, NoamHoldAnnealing, ConstantLR
@@ -46,6 +52,8 @@ def init_distributed(args):
         torch.cuda.set_device(local_rank)
         dist.init_process_group(args.dist_backend)
     else:
+        if deepspeed is None:
+            raise ModuleNotFoundError('deepspeed is required when --train_engine=deepspeed')
         deepspeed.init_distributed(dist_backend=args.dist_backend)
     return world_size, local_rank, rank
 
@@ -71,7 +79,11 @@ def init_dataset_and_dataloader(args, configs, gan, dpo):
 
 def check_modify_and_save_config(args, configs):
     if args.train_engine == "torch_ddp":
-        configs['train_conf']["dtype"] = 'bf16' if args.use_amp is True else 'fp32'
+        if args.use_amp is not True:
+            configs['train_conf']["dtype"] = "fp32"
+        else:
+            bf16_supported = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            configs['train_conf']["dtype"] = "bf16" if bf16_supported else "fp16"
     else:
         with open(args.deepspeed_config, 'r') as fin:
             ds_configs = json.load(fin)
@@ -99,6 +111,8 @@ def wrap_cuda_model(args, model):
         model.cuda()
         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
     else:
+        if deepspeed is None or estimate_zero2_model_states_mem_needs_all_live is None:
+            raise ModuleNotFoundError('deepspeed is required when --train_engine=deepspeed')
         if int(os.environ.get('RANK', 0)) == 0:
             logging.info("Estimating model states memory needs (zero2)...")
             estimate_zero2_model_states_mem_needs_all_live(
@@ -131,6 +145,8 @@ def init_optimizer_and_scheduler(args, configs, model, gan):
 
         # use deepspeed optimizer for speedup
         if args.train_engine == "deepspeed":
+            if deepspeed is None:
+                raise ModuleNotFoundError('deepspeed is required when --train_engine=deepspeed')
             def scheduler(opt):
                 return scheduler_type(opt, **configs['train_conf']['scheduler_conf'])
             model, optimizer, _, scheduler = deepspeed.initialize(
@@ -188,6 +204,9 @@ def init_summarywriter(args):
     writer = None
     if int(os.environ.get('RANK', 0)) == 0:
         os.makedirs(args.model_dir, exist_ok=True)
+        if SummaryWriter is None:
+            logging.warning('tensorboard is not installed, disable SummaryWriter')
+            return None
         writer = SummaryWriter(args.tensorboard_dir)
     return writer
 
@@ -222,8 +241,12 @@ def cosyvoice_join(group_join, info_dict):
     if info_dict["batch_idx"] != 0:
         # we try to join all rank in both ddp and deepspeed mode, in case different rank has different lr
         try:
+            timeout_s = info_dict.get("timeout", 60)
+            timeout = None
+            if timeout_s is not None:
+                timeout = datetime.timedelta(seconds=int(timeout_s))
             dist.monitored_barrier(group=group_join,
-                                   timeout=group_join.options._timeout)
+                                   timeout=timeout)
             return False
         except RuntimeError as e:
             logging.info("Detected uneven workload distribution: {}\n".format(e) +
@@ -247,7 +270,8 @@ def batch_forward(model, batch, scaler, info_dict, ref_model=None, dpo_loss=None
         dtype = torch.float32
 
     if info_dict['train_engine'] == 'torch_ddp':
-        autocast = torch.cuda.amp.autocast(enabled=scaler is not None, dtype=dtype)
+        use_amp = bool(info_dict.get('use_amp', scaler is not None))
+        autocast = torch.cuda.amp.autocast(enabled=use_amp, dtype=dtype)
     else:
         autocast = torch.cuda.amp.autocast(enabled=True, dtype=dtype, cache_enabled=False)
 

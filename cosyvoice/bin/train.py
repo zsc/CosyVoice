@@ -21,7 +21,10 @@ from copy import deepcopy
 import os
 import torch
 import torch.distributed as dist
-import deepspeed
+try:
+    import deepspeed  # type: ignore
+except ModuleNotFoundError:
+    deepspeed = None
 
 from hyperpyyaml import load_hyperpyyaml
 
@@ -89,7 +92,14 @@ def get_args():
                         default=60,
                         type=int,
                         help='timeout (in seconds) of cosyvoice_join.')
-    parser = deepspeed.add_config_arguments(parser)
+    if deepspeed is not None:
+        parser = deepspeed.add_config_arguments(parser)
+    else:
+        # Allow users to run with --train_engine torch_ddp without installing deepspeed.
+        # NOTE: example scripts pass --deepspeed_config even in torch_ddp mode.
+        parser.add_argument('--deepspeed_config',
+                            default=None,
+                            help='deepspeed config json (only used when --train_engine deepspeed)')
     args = parser.parse_args()
     return args
 
@@ -97,7 +107,10 @@ def get_args():
 @record
 def main():
     args = get_args()
-    os.environ['onnx_path'] = args.onnx_path
+    if args.onnx_path:
+        os.environ['onnx_path'] = args.onnx_path
+    else:
+        os.environ.pop('onnx_path', None)
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
     # gan train has some special initialization logic
@@ -174,7 +187,7 @@ def main():
     executor.step = start_step
 
     # Init scaler, used for pytorch amp mixed precision training
-    scaler = torch.cuda.amp.GradScaler() if args.use_amp else None
+    scaler = torch.cuda.amp.GradScaler() if (args.use_amp and info_dict.get("dtype") == "fp16") else None
     print('start step {} start epoch {}'.format(start_step, start_epoch))
 
     # Start training loop

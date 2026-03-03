@@ -14,6 +14,7 @@
 # limitations under the License.
 """Label smoothing module."""
 
+import math
 import torch
 from torch import nn
 
@@ -64,6 +65,11 @@ class LabelSmoothingLoss(nn.Module):
         self.smoothing = smoothing
         self.size = size
         self.normalize_length = normalize_length
+        self.kl_constant = 0.0
+        if self.confidence > 0.0:
+            self.kl_constant += self.confidence * math.log(self.confidence)
+        if self.smoothing > 0.0:
+            self.kl_constant += self.smoothing * math.log(self.smoothing / (self.size - 1))
 
     def forward(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute loss between x and target.
@@ -83,14 +89,34 @@ class LabelSmoothingLoss(nn.Module):
         batch_size = x.size(0)
         x = x.view(-1, self.size)
         target = target.view(-1)
-        # use zeros_like instead of torch.no_grad() for true_dist,
-        # since no_grad() can not be exported by JIT
-        true_dist = torch.zeros_like(x)
-        true_dist.fill_(self.smoothing / (self.size - 1))
-        ignore = target == self.padding_idx  # (B,)
+        ignore = target == self.padding_idx  # (N,)
         total = len(target) - ignore.sum().item()
         target = target.masked_fill(ignore, 0)  # avoid -1 index
-        true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
-        kl = self.criterion(torch.log_softmax(x, dim=1), true_dist)
+
+        # Memory-efficient implementation: avoid allocating a dense (N, V)
+        # target distribution (true_dist). This matters a lot for large vocab.
+        #
+        # For smoothing == 0, this reduces to NLL loss:
+        #   loss = -log_softmax(x)[target]
+        logsumexp = torch.logsumexp(x, dim=1).float()  # (N,)
+        target_logits = x.gather(1, target.unsqueeze(1)).squeeze(1).float()  # (N,)
+        log_probs_y = target_logits - logsumexp  # (N,)
+        nll_loss = -log_probs_y
+
+        if self.smoothing == 0.0:
+            loss = nll_loss
+        else:
+            # Smooth loss for uniform distribution over non-target classes:
+            #   smooth_loss = -mean_{j!=y} log_softmax(x)[j]
+            sum_log_probs = x.sum(dim=1, dtype=torch.float32) - self.size * logsumexp  # (N,)
+            smooth_loss = -(sum_log_probs - log_probs_y) / (self.size - 1)
+            loss = self.confidence * nll_loss + self.smoothing * smooth_loss
+
+            # Match the original KLDivLoss(true_dist || log_softmax(x)) up to
+            # a constant that does not affect gradients.
+            if self.kl_constant != 0.0:
+                loss = loss + loss.new_tensor(self.kl_constant)
+
+        loss = loss.masked_fill(ignore, 0.0)
         denom = total if self.normalize_length else batch_size
-        return kl.masked_fill(ignore.unsqueeze(1), 0).sum() / denom
+        return loss.sum() / denom
