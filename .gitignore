@@ -46,7 +46,9 @@ compile_commands.json
 *.m4a
 *.aac
 *.pt
+*.log
 pretrained_models/*
+eval_models/
 *_pb2_grpc.py
 *_pb2.py
 *.tar

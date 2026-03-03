@@ -1,0 +1,145 @@
+# LLM-only config for small VRAM GPUs (e.g. 8GB).
+# This file is intended to be used with examples/paimon/cosyvoice/run.sh
+# via: train_models=llm train_config=conf/llm_8gb.yaml
+
+# Import the base recipe, then override only what we need.
+# NOTE: hyperpyyaml does not support native YAML anchors across files,
+# so we keep this as a minimal copy of the training knobs.
+
+# set random seed
+__set_seed1: !apply:random.seed [1986]
+__set_seed2: !apply:numpy.random.seed [1986]
+__set_seed3: !apply:torch.manual_seed [1986]
+__set_seed4: !apply:torch.cuda.manual_seed_all [1986]
+
+# fixed params (must match pretrained)
+sample_rate: 22050
+text_encoder_input_size: 512
+llm_input_size: 1024
+llm_output_size: 1024
+spk_embed_dim: 192
+
+# model params
+llm: !new:cosyvoice.llm.llm.TransformerLM
+    text_encoder_input_size: !ref <text_encoder_input_size>
+    llm_input_size: !ref <llm_input_size>
+    llm_output_size: !ref <llm_output_size>
+    text_token_size: 51866
+    speech_token_size: 4096
+    length_normalized_loss: True
+    lsm_weight: 0
+    spk_embed_dim: !ref <spk_embed_dim>
+    text_encoder: !new:cosyvoice.transformer.encoder.ConformerEncoder
+        input_size: !ref <text_encoder_input_size>
+        output_size: 1024
+        attention_heads: 16
+        linear_units: 4096
+        num_blocks: 6
+        dropout_rate: 0.1
+        positional_dropout_rate: 0.1
+        attention_dropout_rate: 0.0
+        normalize_before: True
+        input_layer: 'linear'
+        pos_enc_layer_type: 'rel_pos_espnet'
+        selfattention_layer_type: 'rel_selfattn'
+        use_cnn_module: False
+        macaron_style: False
+        use_dynamic_chunk: False
+        use_dynamic_left_chunk: False
+        static_chunk_size: 1
+    llm: !new:cosyvoice.transformer.encoder.TransformerEncoder
+        input_size: !ref <llm_input_size>
+        output_size: !ref <llm_output_size>
+        attention_heads: 16
+        linear_units: 4096
+        num_blocks: 14
+        dropout_rate: 0.1
+        positional_dropout_rate: 0.1
+        attention_dropout_rate: 0.0
+        input_layer: 'linear_legacy'
+        pos_enc_layer_type: 'rel_pos_espnet'
+        selfattention_layer_type: 'rel_selfattn'
+        static_chunk_size: 1
+    sampling: !name:cosyvoice.utils.common.ras_sampling
+        top_p: 0.8
+        top_k: 25
+        win_size: 10
+        tau_r: 0.1
+
+# Keep these top-level keys for compatibility with cosyvoice/bin/train.py overrides.
+# They will be overridden to None when training --model llm.
+flow: null
+hift: null
+hifigan: null
+
+# processor functions (reuse the same tokenizer/feature extractors as the base config)
+parquet_opener: !name:cosyvoice.dataset.processor.parquet_opener
+get_tokenizer: !name:whisper.tokenizer.get_tokenizer
+    multilingual: True
+    num_languages: 100
+    language: 'zh'
+    task: 'transcribe'
+allowed_special: 'all'
+tokenize: !name:cosyvoice.dataset.processor.tokenize
+    get_tokenizer: !ref <get_tokenizer>
+    allowed_special: !ref <allowed_special>
+filter: !name:cosyvoice.dataset.processor.filter
+    max_length: 40960
+    min_length: 0
+    token_max_length: 200
+    token_min_length: 1
+    # Hard cap to avoid rare long utterances blowing up attention memory.
+    speech_token_max_length: 320
+resample: !name:cosyvoice.dataset.processor.resample
+    resample_rate: !ref <sample_rate>
+feat_extractor: !name:matcha.utils.audio.mel_spectrogram
+    n_fft: 1024
+    num_mels: 80
+    sampling_rate: !ref <sample_rate>
+    hop_size: 256
+    win_size: 1024
+    fmin: 0
+    fmax: 8000
+    center: False
+compute_fbank: !name:cosyvoice.dataset.processor.compute_fbank
+    feat_extractor: !ref <feat_extractor>
+parse_embedding: !name:cosyvoice.dataset.processor.parse_embedding
+    normalize: True
+shuffle: !name:cosyvoice.dataset.processor.shuffle
+    shuffle_size: 1000
+sort: !name:cosyvoice.dataset.processor.sort
+    sort_size: 500
+batch: !name:cosyvoice.dataset.processor.batch
+    batch_type: 'dynamic'
+    # Smaller than the flow recipe to reduce peak memory during llm.
+    max_frames_in_batch: 120
+padding: !name:cosyvoice.dataset.processor.padding
+    use_spk_embedding: True
+
+data_pipeline: [
+    !ref <parquet_opener>,
+    !ref <tokenize>,
+    !ref <filter>,
+    !ref <resample>,
+    !ref <compute_fbank>,
+    !ref <parse_embedding>,
+    !ref <shuffle>,
+    !ref <sort>,
+    !ref <batch>,
+    !ref <padding>,
+]
+
+train_conf:
+    optim: adam
+    optim_conf:
+        lr: 1e-5
+        foreach: false
+    scheduler: constantlr
+    scheduler_conf:
+        warmup_steps: 2500
+    max_epoch: 20
+    grad_clip: 5
+    # Increase accumulation to keep global batch roughly similar but reduce per-step memory.
+    accum_grad: 8
+    log_interval: 100
+    save_per_step: -1
